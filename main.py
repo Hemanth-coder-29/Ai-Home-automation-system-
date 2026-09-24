@@ -9,15 +9,41 @@ import queue
 import threading
 import sys
 import os
+import serial  # Added for Arduino communication
+import time
 
 # ==========================================
 # 1. INITIALIZATION & SETUP
 # ==========================================
 print("Initializing Multi-Modal Smart Home System...")
 
+# --- Hardware Communication Setup ---
+try:
+    # TODO: Replace 'COM5' with your Bluetooth COM port (e.g., 'COM8') found in Device Manager
+    arduino = serial.Serial('COM5', 9600, timeout=1)
+    time.sleep(2) # Give Arduino a moment to reset after connecting
+    print("[HARDWARE] Successfully connected to Arduino via Bluetooth")
+except Exception as e:
+    arduino = None
+    print(f"[HARDWARE] WARNING: Arduino not found on specified port. ({e})")
+
+# Map the AI names to the exact text codes the Arduino C++ expects
+HARDWARE_MAP = {
+    'LIGHT_ON': 'L1\n',
+    'LIGHT_OFF': 'L0\n',
+    'FAN_ON': 'F1\n',
+    'FAN_OFF': 'F0\n'
+}
+
+def send_to_arduino(command):
+    """Helper function to send the physical command to the Arduino"""
+    if arduino and command in HARDWARE_MAP:
+        hw_code = HARDWARE_MAP[command]
+        arduino.write(hw_code.encode()) # Send over Bluetooth
+        print(f"[HARDWARE] Sent command '{hw_code.strip()}' to Arduino.")
+
 # --- Gesture Recognition Setup ---
 tf_model = tf.keras.models.load_model('model/gesture_model.keras')
-# Map the AI classes directly to our hardware commands
 gesture_commands = ['LIGHT_ON', 'LIGHT_OFF', 'FAN_ON', 'FAN_OFF'] 
 
 mp_hands = mp.solutions.hands
@@ -50,7 +76,7 @@ VOICE_COMMAND_MAP = {
 # ==========================================
 def audio_callback(indata, frames, time, status):
     if status:
-        pass # Ignored to keep console clean
+        pass 
     audio_queue.put(bytes(indata))
 
 def voice_listener():
@@ -67,12 +93,12 @@ def voice_listener():
                     for phrase, action in VOICE_COMMAND_MAP.items():
                         if phrase in text:
                             print(f"\n---> [VOICE COMMAND DETECTED]: {action} <---")
+                            send_to_arduino(action)  # Trigger hardware
                             break
 
 # ==========================================
 # 3. START THREADS
 # ==========================================
-# Start voice recognition in a background thread
 voice_thread = threading.Thread(target=voice_listener, daemon=True)
 voice_thread.start()
 
@@ -83,7 +109,6 @@ cap = cv2.VideoCapture(0)
 print("[GESTURE] Camera started. Perform gestures to control appliances.")
 print("Press 'q' to exit the entire system.\n")
 
-# State tracker to prevent terminal spam
 last_gesture = None 
 
 while True:
@@ -110,16 +135,16 @@ while True:
             class_id = np.argmax(prediction)
             confidence = prediction[0][class_id] * 100
 
-            if confidence > 85: # Strict confidence threshold
+            if confidence > 85: 
                 current_gesture = gesture_commands[class_id]
                 
-                # Display on camera window
                 label_text = f"CMD: {current_gesture} ({confidence:.0f}%)"
                 cv2.putText(frame, label_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # Print gesture command only if it changes
+    # Print and send command only if it changes
     if current_gesture != "NONE" and current_gesture != last_gesture:
         print(f"\n---> [GESTURE COMMAND DETECTED]: {current_gesture} <---")
+        send_to_arduino(current_gesture)  # Trigger hardware
         last_gesture = current_gesture
 
     cv2.imshow("Multi-Modal Smart Home Hub", frame)
@@ -128,4 +153,6 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+if arduino:
+    arduino.close()
 print("System shut down safely.")
